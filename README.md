@@ -28,3 +28,15 @@ cargo run --release
 This should produce a new file called `out.ply` which is the iterative closest
 point match after 10 iterations of `data/bunny/data/bun000.ply` and
 `data/bunny/data/bun045.ply`.
+
+This data can then be visualized in blender.
+
+## Results
+
+### Unaligned point clouds
+
+![](screenshots/Unaligned.png)
+
+### Aligned point clouds
+
+![](screenshots/Aligned.png)
