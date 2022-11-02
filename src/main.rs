@@ -6,70 +6,6 @@ use memmap::Mmap;
 use logos::Logos;
 use nalgebra as na;
 
-/*
-fn parse_ply(input: &str) -> IResult<&str, VertexBuf> {
-    use nom::{
-        number::complete::double,
-        bytes::complete::{tag, take_till},
-        character::{
-            is_newline,
-            complete::{line_ending, not_line_ending, space1, digit1}
-        },
-        combinator::{not, opt},
-        multi::many0_count,
-        branch::alt,
-        sequence::{separated_pair, preceded},
-        error::context,
-        Parser,
-    };
-
-    fn element_vertex(input: &str) -> IResult<&str, usize> {
-        let (input, _) = tag("element vertex ")(input)?;
-        let (input, num) = digit1.map(|s: &str| s.parse().unwrap()).parse(input)?;
-        let (input, _) = line_ending(input)?;
-        Ok((input, num))
-    }
-
-    fn end_header(input: &str) -> IResult<&str, ()> {
-        let (input, _) = tag("end_header").and(line_ending).parse(input)?;
-        Ok((input, ()))
-    }
-
-    let (input, _) = preceded(tag("ply"), line_ending)
-        .and(preceded(tag("format ascii 1.0"), line_ending))
-        .parse(input)?;
-
-    dbg!(&input[0..1]);
-    let (input, _) = take_till(|c: char| is_newline(c as u8))(input)?;
-        // .and(many0_count(not(element_vertex).and(many0_count(not_line_ending)).and(line_ending)))
-
-    let (input, n_vertices) = context("element_vertex", element_vertex)(input)?;
-    let (input, _) = many0_count(
-            not(end_header)
-                .and(preceded(many0_count(not_line_ending), line_ending))
-        )
-        .and(end_header)
-        .parse(input)?;
-
-    fn vertex(input: &str) -> IResult<&str, (f32, f32, f32)> {
-        let sep = space1;
-        let (input, ((x, y), z)) = separated_pair(separated_pair(double, sep, double), sep, double)(input)?;
-        let (input, _) = line_ending(input)?;
-        Ok((input, (x as f32, y as f32, z as f32)))
-    }
-
-    let mut buf = VertexBuf::new();
-    let mut input = input;
-    for _ in 0..n_vertices {
-        let (inp, triplet) = vertex(input)?;
-        input = inp;
-        buf.push_vertex(triplet);
-    }
-
-    return Ok((input, buf));
-}
-*/
-
 #[derive(Logos, Debug, PartialEq)]
 enum PlyToken<'src> {
     #[token("ply")]
@@ -193,45 +129,6 @@ fn output_ply(path: &str, points: &[na::Point3<f32>]) -> io::Result<()> {
 fn transmute_kd_slice(points: &[na::Point3<f32>]) -> &kd_tree::KdSlice3<na::Point3<f32>> {
     unsafe { std::mem::transmute(points) }
 }
-
-/*
-fn point_based_matching(matchings: &[(na::Point3<f32>, na::Point3<f32>)]) -> (f32, f32, f32) {
-    let (p1_sum, p2_sum) = matchings
-        .iter()
-        .map(|(p1, p2)| (p1.coords, p2.coords))
-        .reduce(|(lhs_p1, lhs_p2), (rhs_p1, rhs_p2)| (lhs_p1 + rhs_p1, lhs_p2 + rhs_p2));
-
-    let p1_mean = p1_sum / matchints.len() as f32;
-    let p2_mean = p2_sum / matchints.len() as f32;
-
-    let mut s_x_xp = 0.0;
-    let mut s_y_yp = 0.0;
-    let mut s_x_yp = 0.0;
-    let mut s_y_xp = 0.0;
-
-    /*
-    matchings
-        .iter()
-        .map(|(p1, p2)| (p1.coords - p1_mean, p2.coords - p2_mean))
-        .fold((0.0, 0.0, 0.0, 0.0), |()|)
-        */
-
-    for (p1, p2) in matchings {
-        let diff1 = p1 - p1_mean;
-        let diff2 = p2 - p2_mean;
-        s_x_xp += diff1.x * diff2.x;
-        s_y_yp += diff1.y * diff2.y;
-        s_x_yp += diff1.x * diff2.y;
-        s_y_xp += diff1.y * diff2.x;
-    }
-
-    let rot_angle = (s_x_yp - s_y_xp, s_x_xp + s_y_yp).atan2();
-    let translation_x = p2_mean.x - (p1_mean.x * rot_angle.cos() - p1_mean.x * rot_angle.sin());
-    let translation_y = p2_mean.y - (p1_mean.x * rot_angle.sin() + p1_mean.x * rot_angle.cos());
-
-    return (rot_angle, translation_x, translation_y);
-}
-*/
 
 fn naive_icp(
     fix: &mut [na::Point3<f32>],
