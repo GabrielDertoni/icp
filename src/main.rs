@@ -1,203 +1,94 @@
-#![feature(iterator_try_collect)]
+#![feature(iterator_try_collect, slice_flatten, iter_next_chunk)]
+#![allow(dead_code)]
 
-use std::{fs, io};
+mod ply;
+mod obj;
 
-use memmap::Mmap;
-use logos::Logos;
+use std::{env, ops::MulAssign, path::{Path, PathBuf}};
+
 use nalgebra as na;
+use anyhow::{anyhow, Result, Context};
 
-#[derive(Logos, Debug, PartialEq)]
-enum PlyToken<'src> {
-    #[token("ply")]
-    Ply,
+fn find_transformation<SA, SB>(
+    mut a: na::Matrix<f64, na::Const<3>, na::Dynamic, SA>,
+    mut b: na::Matrix<f64, na::Const<3>, na::Dynamic, SB>
+) -> na::IsometryMatrix3<f64>
+where
+    SA: na::StorageMut<f64, na::U3, na::Dynamic>,
+    SB: na::StorageMut<f64, na::U3, na::Dynamic>,
+{
+    let n = a.ncols();
+    // center
+    let centroid_movable = a.column_sum() / n as f64;
+    let centroid_fix     = b.column_sum() / n as f64;
 
-    #[token("format ascii 1.0")]
-    FormatAscii1_0,
-
-    #[regex("obj_info [^\n]+", |lex| lex.slice().strip_prefix("obj_info"))]
-    ObjInfo(&'src str),
-
-    #[token("element")]
-    Element,
-
-    #[token("vertex")]
-    Vertex,
-
-    #[token("property")]
-    Property,
-
-    #[token("end_header")]
-    EndHeader,
-
-    #[regex(r"(-|\+)?[0-9]+", |lex| lex.slice().parse())]
-    Int(u32),
-
-    #[regex(r"(-|\+)?[0-9]+\.[0-9]+(e(-|\+)[0-9]+)?", |lex| lex.slice().parse())]
-    Num(f32),
-
-    #[error]
-    #[regex(r"[ \t\n\f]+", logos::skip)]
-    Error,
-}
-
-fn parse_ply(input: &str) -> Result<Vec<na::Point3<f32>>, &'static str> {
-    let mut lex = PlyToken::lexer(input);
-
-    if lex.next() != Some(PlyToken::Ply) {
-        return Err("expected header 'ply'");
+    for mut row in b.column_iter_mut() {
+        row -= centroid_fix;
     }
 
-    if lex.next() != Some(PlyToken::FormatAscii1_0) {
-        return Err("expected header 'ascii' format");
+    for mut row in a.column_iter_mut() {
+        row -= centroid_movable;
     }
 
-    let n_vertices = loop {
-        lex.by_ref()
-            .skip_while(|token| !matches!(token, PlyToken::Element))
-            .next()
-            .ok_or("expected an 'element vertex <vertex count>' line")?;
-        if Some(PlyToken::Vertex) == lex.next() {
-            if let Some(PlyToken::Int(count)) = lex.next() {
-                break count;
-            } else {
-                return Err("expected 'element vertex <vertex count>'");
-            }
-        }
+    let h = a * b.transpose();
+
+    let na::SVD { u: Some(u), v_t: Some(mut v_t), .. } = h.svd(true, true) else {
+        panic!("failed to calculate svd");
+    };
+    let u_t = u.transpose();
+    let r = {
+        let r = v_t.tr_mul(&u_t);
+        let r = if r.determinant() < 0.0 {
+            v_t.row_mut(2).mul_assign(-1.0);
+            v_t.tr_mul(&u_t)
+        } else {
+            r
+        };
+        na::Rotation3::from_matrix(&r)
     };
 
-    lex.by_ref()
-        .skip_while(|token| !matches!(token, PlyToken::EndHeader))
-        .next()
-        .ok_or("expected the end of the header")?;
-
-    let mut parse_float = || {
-        match lex.next() {
-            Some(PlyToken::Num(val)) => Ok(val),
-            Some(PlyToken::Int(val)) => Ok(val as f32),
-            _ => Err("expected a number"),
-        }
-    };
-
-    let mut parse_point = || {
-        Ok(na::Point3::new(
-            parse_float()?,
-            parse_float()?,
-            parse_float()?,
-        ))
-    };
-
-    (0..n_vertices).map(|_| parse_point()).try_collect()
-}
-
-fn output_ply(path: &str, points: &[na::Point3<f32>]) -> io::Result<()> {
-    use std::io::{Write, BufWriter};
-
-    let mut file = BufWriter::new(fs::File::create(path)?);
-    writeln!(file, "ply")?;
-    writeln!(file, "format ascii 1.0")?;
-    writeln!(file, "format ascii 1.0")?;
-    writeln!(file, "format ascii 1.0")?;
-    writeln!(file, "obj_info is_cyberware_data 1")?;
-    writeln!(file, "obj_info is_mesh 0")?;
-    writeln!(file, "obj_info is_warped 0")?;
-    writeln!(file, "obj_info is_interlaced 1")?;
-    // writeln!(file, "obj_info num_cols 512")?;
-    // writeln!(file, "obj_info num_rows 400")?;
-    // writeln!(file, "obj_info echo_rgb_offset_x 0.013000")?;
-    // writeln!(file, "obj_info echo_rgb_offset_y 0.153600")?;
-    // writeln!(file, "obj_info echo_rgb_offset_z 0.172000")?;
-    // writeln!(file, "obj_info echo_rgb_frontfocus 0.930000")?;
-    // writeln!(file, "obj_info echo_rgb_backfocus 0.012660")?;
-    // writeln!(file, "obj_info echo_rgb_pixelsize 0.000010")?;
-    // writeln!(file, "obj_info echo_rgb_centerpixel 232")?;
-    // writeln!(file, "obj_info echo_frames 512")?;
-    // writeln!(file, "obj_info echo_lgincr 0.000500")?;
-    writeln!(file, "element vertex {}", points.len())?;
-    writeln!(file, "property float x")?;
-    writeln!(file, "property float y")?;
-    writeln!(file, "property float z")?;
-    // writeln!(file, "element range_grid 204800")?;
-    // writeln!(file, "property list uchar int vertex_indices")?;
-    writeln!(file, "end_header")?;
-    for point in points {
-        writeln!(file, "{} {} {}", point.x, point.y, point.z)?;
-    }
-
-    Ok(())
-}
-
-fn transmute_kd_slice(points: &[na::Point3<f32>]) -> &kd_tree::KdSlice3<na::Point3<f32>> {
-    unsafe { std::mem::transmute(points) }
+    let t = na::Translation3::from(centroid_fix - r * centroid_movable);
+    na::IsometryMatrix3::from_parts(t, r)
 }
 
 fn naive_icp(
-    fix: &mut [na::Point3<f32>],
-    movable: &mut [na::Point3<f32>],
+    fix: &[na::Point3<f64>],
+    movable: &mut [na::Point3<f64>],
     n_iter: usize,
-    distance_threashold: f32,
-) {
-    use kd_tree::KdSlice3;
+    distance_threashold: f64,
+) -> na::IsometryMatrix3<f64> {
+    use fnntw::Tree;
 
-    {
-        let _ = KdSlice3::sort_by_ordered_float(fix);
-    }
-    let kdtree = transmute_kd_slice(fix);
+    // SAFETY: `Point3` is `repr(C)` with a `SVector` inside which is also `repr(C)` and has inside
+    // it just the data for the vector. This data is should just be a `[[f64; 3] 1]` which we can
+    // just transmute to `[f64; 3]`.
+    let fix_slice_of_slice: &[[f64; 3]] = unsafe { std::mem::transmute(fix) };
+    let kdtree = Tree::new(fix_slice_of_slice, 16).unwrap();
 
+    let mut total_isom = na::IsometryMatrix3::<f64>::identity();
     for _ in 0..n_iter {
-        let mut matchings_fix = Vec::new();
+        let mut matchings_fix: Vec<[f64; 3]> = Vec::new();
         let mut matchings_movable = Vec::new();
         for p0 in movable.iter() {
-            let near = kdtree.nearest(p0).unwrap();
-            if near.squared_distance <= distance_threashold.powi(2) {
-                matchings_fix.push(near.item.coords);
-                matchings_movable.push(p0.coords);
+            let (squared_distance, _, near) = kdtree.query_nearest(&p0.coords.data.0[0]).unwrap();
+            if squared_distance <= distance_threashold.powi(2) {
+                // SAFETY: `NonNan` is `repr(transparent)`
+                matchings_fix.push(unsafe { std::mem::transmute(*near) });
+                matchings_movable.push(p0.coords.data.0[0]);
             }
         }
 
-        // center
-        let centroid_fix = matchings_fix
-            .iter()
-            .sum::<na::Vector3<f32>>() / fix.len() as f32;
-        let centroid_movable = matchings_movable
-            .iter()
-            .sum::<na::Vector3<f32>>() / movable.len() as f32;
-
-        let mut a = na::Matrix3xX::from_columns(matchings_movable.as_slice());
-        let mut b = na::Matrix3xX::from_columns(matchings_fix.as_slice());
-
-        for mut row in a.column_iter_mut() {
-            row -= centroid_fix;
-        }
-
-        for mut row in b.column_iter_mut() {
-            row -= centroid_movable;
-        }
-
-        let h = a * b.transpose();
-
-        let na::SVD { u: Some(u), v_t: Some(v_t), .. } = h.svd(true, true) else {
-            panic!("failed to calculate svd");
-        };
-        let r = v_t.transpose() * u.transpose();
-        let t = centroid_fix - r * centroid_movable;
+        let n = matchings_fix.len();
+        let a = na::MatrixSliceMut3xX::from_slice(matchings_movable.flatten_mut(), n);
+        let b = na::MatrixSliceMut3xX::from_slice(matchings_fix.flatten_mut(), n);
+        let isom = find_transformation(a, b);
 
         for point in movable.iter_mut() {
-            *point = r * *point;
-            *point += t;
+            *point = isom.transform_point(point);
         }
+        total_isom = isom * total_isom;
     }
-}
-
-fn mmap_file(path: &str) -> io::Result<Mmap> {
-    let file = fs::File::open(path)?;
-    Ok(unsafe { Mmap::map(&file)? })
-}
-
-fn get_data(path: &str) -> Result<Vec<na::Point3<f32>>, Box<dyn std::error::Error>> {
-    let mmap = mmap_file(path)?;
-    let contents = unsafe { std::str::from_utf8_unchecked(&mmap) };
-    let data = parse_ply(contents)?;
-    Ok(data)
+    total_isom
 }
 
 macro_rules! time {
@@ -215,13 +106,92 @@ fn time_fn<T>(name: &str, f: impl FnOnce() -> T) -> T {
     res
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut data1 = time!(get_data("data/bunny/data/bun000.ply"))?;
-    let mut data2 = time!(get_data("data/bunny/data/bun045.ply"))?;
+fn series<P: AsRef<Path>>(paths: impl IntoIterator<Item = P>) -> Result<Vec<na::IsometryMatrix3<f64>>> {
+    let mut it = paths
+        .into_iter()
+        .map(|path| obj::read_obj(path));
+    let mut prev = it.next().expect("paths to have at least one element")?;
+    let mut trajectory = vec![na::IsometryMatrix3::identity()];
+    for data in tqdm::tqdm(it) {
+        let mut data = data?;
+        let isom = naive_icp(&prev, &mut data, 50, 10.0);
+        // let isom = naive_icp(&data, &mut prev, 50, 10.0);
+        trajectory.push(isom);
+        prev = data;
+    }
+    Ok(trajectory)
+}
 
-    time!(naive_icp(&mut data1, &mut data2, 10, 10.0));
+fn main() -> Result<()> {
+    /*
+    let mut data1 = time!(ply::read_ply("data/bunny/data/bun000.ply"))?;
+    let mut data2 = time!(ply::read_ply("data/bunny/data/bun045.ply"))?;
 
-    output_ply("out.ply", &data2)?;
+    let isom = time!(naive_icp(&mut data1, &mut data2, 10, 10.0));
+    dbg!(isom.rotation.axis());
+    dbg!(isom.rotation.angle());
+    dbg!(360.0 * isom.rotation.angle() / std::f64::consts::TAU);
+    dbg!(&isom.translation);
+    time!(ply::output_ply("out.ply", &data2))?;
+    */
+
+    /*
+    let isom1 = {
+        let mut data1 = time!(obj::read_obj("data/KITTI-Sequence/000000/000000_points.obj"))?;
+        let mut data2 = time!(obj::read_obj("data/KITTI-Sequence/000001/000001_points.obj"))?;
+        time!(naive_icp(&mut data1, &mut data2, 50, 10.0))
+    };
+
+    let isom = {
+        let mut data1 = time!(obj::read_obj("data/KITTI-Sequence/000001/000001_points.obj"))?;
+        let mut data2 = time!(obj::read_obj("data/KITTI-Sequence/000002/000002_points.obj"))?;
+        time!(naive_icp(&mut data1, &mut data2, 50, 10.0))
+    };
+    dbg!(isom.rotation.axis());
+    dbg!(isom.rotation.angle());
+    dbg!(360.0 * isom.rotation.angle() / std::f64::consts::TAU);
+    dbg!(&isom.translation);
+
+    let mut points = time!(obj::read_obj("data/KITTI-Sequence/000002/000002_points.obj"))?;
+    let total_isom = isom * isom1;
+    for point in &mut points {
+        *point = total_isom.transform_point(point);
+    }
+    time!(obj::output_obj("out.obj", &points))?;
+    */
+
+    let paths = env::args()
+        .skip(1)
+        .map(|fname| PathBuf::from(fname))
+        .collect::<Vec<_>>();
+
+    let trajectory = series(&paths)?;
+    /*
+    let final_isom = trajectory.iter()
+        .copied()
+        .reduce(|lhs, rhs| rhs * lhs)
+        .unwrap();
+
+    // let mut points = time!(obj::read_obj("data/KITTI-Sequence/000029/000029_points.obj"))?;
+    let mut points = time!(obj::read_obj("data/KITTI-Sequence/000000/000000_points.obj"))?;
+    for point in &mut points {
+        *point = final_isom.transform_point(point);
+    }
+    time!(obj::output_obj("out.obj", &points))?;
+    */
+
+    let dirname: &Path = "fixed".as_ref();
+    for (isom, path) in trajectory.iter().zip(paths) {
+        let vec = isom.translation.vector;
+        println!("[{}, {}, {}]", vec.x, vec.y, vec.z);
+
+        let mut points = obj::read_obj(&path)?;
+        for point in &mut points {
+            *point = isom.transform_point(point);
+        }
+        let fname = dirname.join(path.file_name().unwrap());
+        obj::output_obj(fname, points.as_slice())?;
+    }
 
     Ok(())
 }
