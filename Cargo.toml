@@ -6,12 +6,30 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+anyhow = "1.0.66"
+arrayvec = "0.7.2"
+bytemuck = { version = "1.12.2", features = ["extern_crate_alloc"] }
 fnntw = "0.2.3"
-kd-tree = { version = "0.4.2", features = ["nalgebra"] }
 logos = "0.12.1"
 memmap = "0.7.0"
-nalgebra = "0.31.2"
+nalgebra = { version = "0.31.2", features = ["bytemuck"] }
 nom = "7.1.1"
 num-traits = "0.2.15"
+ordered-float = { version = "3.3.0", features = ["bytemuck"] }
+rayon = "1.5.3"
+tqdm = "0.4.2"
+
+[profile.release]
+debug = true
+
+# TODO: Remove once https://github.com/reem/rust-ordered-float/pull/115 is merged
+[patch.crates-io.ordered-float]
+git = "https://github.com/reem/rust-ordered-float"
+branch = "master"
+
+# TODO: Remove once https://github.com/Lokathor/bytemuck/pull/141 is merged
+[patch.crates-io.bytemuck]
+git = "https://github.com/GabrielDertoni/bytemuck"
+branch = "move_array_pod_impl"
 
 [features]
